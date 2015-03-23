@@ -1,0 +1,397 @@
+<html>
+<head>
+    <title>Data Pipeline Workshop - Activator Template</title>
+</head>
+<body>
+<div>
+    <p>Welcome to the Data Pipeline Workshop Tutorial! This tutorial starts with a basic Play Framework application and uses it to build a Reactive Data Pipeline Workshop.</p>
+
+    <p>Within the Activator UI you can:
+
+    <ul>
+
+    <li>Browse & edit the code (select Code.  To save a file the keyboard shortcut command-s works.)</li>
+    <li>Add & delete files from the code (select Code and then the plus sign.  To delete open the file and click on delete)</li>
+    <li>Open the code in IntelliJ IDEA or Eclipse (select Code, then the gear dropdown)</li>
+    <li>See the compile output (select Compile)</li>
+    <li>Test the application (select Test)</li>
+    <li>Run the application (select Run)</li>
+    </ul>
+
+    </p>
+
+
+    <h2>View the App</h2>
+
+    <p>Click on the Run Tab and click on start to start the application running.  Activator will automatically update the server when changes are made to the code.</p>
+
+    <p>
+        Once the application has been compiled and the server started, your application can be accessed at: <a
+            href="http://localhost:9000" target="_blank">http://localhost:9000</a><br/>
+    </p>
+     <p>   Check in <a href="#run" class="shortcut">Run</a> to see the server status.<br/>
+    </p>
+</div>
+<div>
+    <h2>Reactive Requests</h2>
+
+    <p>Play Scala uses Futures to execute asynchronous tasks in the background.  The Future is the handle to a future result.  A callback function is added to the Future that gets called when the future completes.</p>
+    <p>The primary way of adding a callback to a Future is to add a map method that essentially means map the result of the Future to a new value - which in this case is a Response.</p>
+
+    <p><b>1. </b> Create a new route that will search twitter by updating<a href="#code/conf/routes" class="shortcut">conf/routes</a> with the following route:</p>
+
+    <p>GET  &nbsp;&nbsp; /search  &nbsp;&nbsp;&nbsp;&nbsp; controllers.Tweets.search(query: String)</p>
+
+<p><b>2. </b> Update <a href="#code/app/controllers/Tweets.scala" class="shortcut">app/controllers/Tweets.scala</a> to add a reactive request handler (or controller) for /tweets:</p>
+<p></p>
+ <pre><code>
+
+import scala.concurrent.Future
+import play.api.libs.json.{JsValue, Json}
+import play.api.libs.ws._
+import play.api.libs.concurrent.Execution.Implicits.defaultContext
+import play.api.Play.current
+
+/**
+* A reactive request is made in Play by returning a Future[Result].  This makes the request asynchronous
+* since the server doesn't block waiting for the response.  This frees the server thread to handle other requests.
+* The callback to the Future is added as a map, which maps the results to a new value when the Future completes.
+* The results of the Future in this example are mapped to a result (HTTP 200 OK) that gets returned to the client.
+**/
+def search(query: String) = Action.async {
+    fetchTweets(query).map(tweets => Ok(tweets))
+}
+
+/**
+* Fetch the latest tweets and return the Future[JsValue] of the results.
+* This fetches the tweets asynchronously and fulfills the Future when the results are returned by calling the function.
+* The results are first filtered and only returned if the result status was OK.
+* Then the results are mapped (or transformed) to JSON.
+**/
+def fetchTweets(query: String): Future[JsValue] = {
+    val tweetsFuture = WS.url("http://twitter-search-proxy.herokuapp.com/search/tweets").withQueryString("q" -> query).get()
+    tweetsFuture
+        .filter(response => response.status == play.api.http.Status.OK)
+        .map { response =>
+                response.json
+            } recover {
+                case _ => Json.obj("statuses" -> Json.arr(Json.obj("text" -> "Error retrieving tweets")))
+            }
+}
+
+</code></pre>
+
+    <p><b>3. </b> Test it: <a href="http://localhost:9000/search?query=typesafe" target="_blank">http://localhost:9000/search?query=typesafe</a></p>
+    <p></p>
+</div>
+
+
+<div>
+    <h2>AngularJS UI</h2>
+
+<p><b>1. </b> The <a href="#code/build.sbt" class="shortcut">build.sbt</a> file already has dependencies on AngularJS and Bootstrap:</p>
+
+<pre><code>"org.webjars" % "bootstrap" % "3.1.1",
+"org.webjars" % "angularjs" % "1.2.16",
+</code></pre>
+
+<p><b>2. </b>  AngularJS has already been enabled in the <a href="#code/app/views/main.scala.html" class="shortcut">main twirl template</a></p>
+
+<pre><code>&lt;html ng-app="tweetMapApp"&gt;
+&lt;script src="@routes.Assets.versioned("lib/angularjs/angular.min.js")"&gt;&lt;/script&gt;
+</code></pre>
+
+
+<p><b>3. </b> AngularJS is setup in  <a href="#code/app/assets/javascripts/index.js" class="shortcut">index.js </a> to fetch the tweets</p>
+
+<p><b>4. </b> The <a href="#code/app/views/index.scala.html" class="shortcut">index.scala.html</a> file displays the tweets. </p>
+
+    <p><b>5. </b> Run the app, make a query, and verify the tweets show up: <a href="http://localhost:9000/" target="_blank">http://localhost:9000</a></p>
+</div>
+
+<div>
+    <h2>WebSockets with Akka Actor</h2>
+
+    <p>WebSockets provide a  bi-directional, full-duplex communications channels over a single TCP connection. </p>
+
+    <p>Play provides different mechanisms for handling WebSockets. In this tutorial we are going to use an actor to handle the WebSockets. First create the Actor to handle the WebSockets.  First create the actor that will handle the WebSocket communication.</p>
+
+    <p><b>1. </b> Create a new TweetUserActor.scala file in <a href="#code/app/actors" class="shortcut">/app/actors</a> containing:</p>
+
+<pre><code>
+
+package actors
+
+import akka.actor.{ActorLogging, Actor, ActorRef, Props}
+import play.api.libs.json.JsValue
+import scala.concurrent.duration._
+import play.api.libs.concurrent.Execution.Implicits.defaultContext
+import controllers.Tweets
+
+/** The out actor is wired in by Play Framework when this Actor is created.
+*   When a message is sent to out the Play Framework then sends it to the client WebSocket.
+*
+**/
+class TweetUserActor(out: ActorRef) extends Actor with ActorLogging {
+
+    //The query is optional so that it starts as a None until the user issues the first query.
+    var maybeQuery: Option[String] = None
+
+    //Simulate events by periodically sending a message to self to fetch tweets.
+    val tick = context.system.scheduler.schedule(Duration.Zero, 5.seconds, self, UserActor.FetchTweets)
+
+    def receive = {
+        //Handle the FetchTweets message to periodically fetch tweets if there is a query available.
+        case UserActor.FetchTweets =>
+            maybeQuery.map { query =>
+                //sending a message to out sends it to the client websocket out by the Play Framework.
+                Tweets.fetchTweets(query).map(tweetUpdate =>  out ! tweetUpdate)
+            }
+
+            case message: JsValue =>
+                maybeQuery = (message \ "query").asOpt[String]
+    }
+
+    override def postStop() {
+        tick.cancel()
+    }
+
+}
+
+object TweetUserActor {
+    case object FetchTweets
+
+    def props(out: ActorRef) = Props(new UserActor(out))
+}
+
+</code></pre>
+
+</div>
+
+
+<div>
+    <h2>Wire up the WebSockets</h2>
+
+    <p>WebSockets are created in Play using a normal route.  The difference is the controller returns a WebSocket instead of a Result.</p>
+
+    <p><b>1.</b> Add a route for the WebSockets connection to the <a href="#code/conf/routes" class="shortcut">routes </a>file:</p>
+
+    <p>GET &nbsp;&nbsp /ws     &nbsp;&nbsp;&nbsp;&nbsp;              controllers.Tweets.ws</p>
+
+    <p><b>2.</b> Add a new controller method to create the Websocket in <a href="#code/app/controllers/Tweets.scala" class="shortcut">app/controllers/Tweets.scala:</a></p>
+
+<pre><code>
+    import play.api.mvc.WebSocket
+    import actors.UserActor
+
+    def ws = WebSocket.acceptWithActor[JsValue, JsValue] { request => out =>
+        TweetUserActor.props(out)
+    }
+
+</code></pre>
+
+    <p><b>3.</b> Update the body of the app.factory section of <a href="#code/app/assets/javascripts/index.js" class="shortcut">index.js </a> replacing the var twitterService = ... with :
+
+<pre><code>
+    var ws = new WebSocket("ws://localhost:9000/ws");
+
+    var twitterService = {
+        tweets: [],
+        query: function (query) {
+            ws.send(JSON.stringify({query: query}));
+        }
+    };
+
+    ws.onmessage = function(event) {
+        $timeout(function() {
+            twitterService.tweets = JSON.parse(event.data).statuses;
+        });
+    };
+
+    return twitterService;
+</code></pre>
+
+
+    <p>To verify tweets are showing up it is useful to use a browser inspector and then look under network for the path ws.  Under there look at the frame and verify the requests are being sent.  In chrome the network inspector has a bug and the websocket calls are not refreshed unless you tab out and back in. </p>
+
+    <p><b>4.</b> Run the app and verify the tweets show up: <a href="http://localhost:9000/" target="_blank">http://localhost:9000</a></p>
+
+
+</div>
+
+<div>
+    <h2>[Optional] Update the Twitter Search to add Geo-Coding</h2>
+
+    <p>This section is optional and will not be covered in the workshop</p>
+
+    <p><b>1.</b> Create new functions in <a href="#code/app/controllers/Tweets.scala" class="shortcut">app/controllers/Tweets.scala</a> to to get (or fake) the location of the tweets:</p>
+
+
+<pre><code>
+
+//update the json imports to these imports:
+import play.api.libs.json.{JsObject, JsValue, Json}
+import play.api.libs.json.__
+
+import scala.util.Random
+
+
+private def putLatLonInTweet(latLon: JsValue) = __.json.update(__.read[JsObject].map(_ + ("coordinates" -> Json.obj("coordinates" -> latLon))))
+
+private def tweetLatLon(tweets: Seq[JsValue]): Future[Seq[JsValue]] = {
+    val tweetsWithLatLonFutures = tweets.map { tweet =>
+        if ((tweet \ "coordinates" \ "coordinates").asOpt[Seq[Double]].isDefined) {
+            Future.successful(tweet)
+        } else {
+            val latLonFuture: Future[(Double, Double)] = (tweet \ "user" \ "location").asOpt[String].map(lookupLatLon).getOrElse(Future.successful(randomLatLon))
+            latLonFuture.map { latLon =>
+                tweet.transform(putLatLonInTweet(Json.arr(latLon._2, latLon._1))).getOrElse(tweet)
+            }
+        }
+    }
+
+    Future.sequence(tweetsWithLatLonFutures)
+}
+
+private def randomLatLon: (Double, Double) = ((Random.nextDouble * 180) - 90, (Random.nextDouble * 360) - 180)
+
+private def lookupLatLon(query: String): Future[(Double, Double)] = {
+    val locationFuture = WS.url("http://maps.googleapis.com/maps/api/geocode/json").withQueryString(
+        "sensor" -> "false",
+        "address" -> query
+    ).get()
+
+    locationFuture.map { response =>
+        (response.json \\ "location").headOption.map { location =>
+                ((location \ "lat").as[Double], (location \ "lng").as[Double])
+            }.getOrElse(randomLatLon)
+    }
+}
+</code></pre>
+
+    <p><b>2.</b> In <a href="#code/app/controllers/Tweets.scala" class="shortcut">app/controllers/Tweets.scala</a> update the fetchTweets function to use the new tweetLatLon function:</p>
+
+    <pre><code>
+
+
+def fetchTweets(query: String): Future[JsValue] = {
+    val tweetsFuture = WS.url("http://twitter-search-proxy.herokuapp.com/search/tweets").withQueryString("q" -> query).get()
+        tweetsFuture.flatMap { response =>
+            tweetLatLon((response.json \ "statuses").as[Seq[JsValue]])
+        } recover {
+            case _ => Seq.empty[JsValue]
+        } map { tweets =>
+            Json.obj("statuses" -> tweets)
+        }
+}
+
+    </code></pre>
+
+</div>
+
+<div>
+    <h2>[Optional] Add the Tweet Map</h2>
+
+    <p>This section is optional and will not be covered in the workshop</p>
+
+    <p><b>1.</b> The webjar dependency on leaflets has already been added to <a href="#code/build.sbt" class="shortcut">build.sbt</a></p>
+
+    <p><b>2.</b> The Leaflet CSS and JS have already been added to <a href="#code/app/views/main.scala.html" class="shortcut">main.scala.html </a>file:</p>
+
+<pre><code>
+    &lt;link rel='stylesheet' href='@routes.Assets.versioned("lib/leaflet/leaflet.css")'&gt;
+    &lt;script type='text/javascript' src='@routes.Assets.versioned("lib/leaflet/leaflet.js")'&gt;&lt;/script&gt;
+    &lt;script type='text/javascript' src='@routes.Assets.versioned("lib/angular-leaflet-directive/angular-leaflet-directive.min.js")'&gt;&lt;/script&gt;
+</code></pre>
+
+    <p><b>3.</b> Above the &lt;ul&gt; in <a href="#code/app/views/index.scala.html" class="shortcut">index.scala.html </a> add a map:</p>
+    <pre><code>&lt;leaflet width="100%" height="500px" markers="markers"&gt;&lt;/leaflet&gt;</code></pre>
+
+
+    <p><b>4.</b> Update the first line of <a href="#code/app/assets/javascripts/index.js" class="shortcut">index.js </a> with:</p>
+
+<pre><code>
+    var app = angular.module('tweetMapApp', ["leaflet-directive"]);
+</code></pre>
+
+    <p><b>5.</b> Update the body of the app.controller('Tweets' ... section of the <a href="#code/app/assets/javascripts/index.js" class="shortcut">index.js </a> file with the following:</p>
+
+<pre><code>
+    $scope.tweets = [];
+    $scope.markers = [];
+
+    $scope.$watch(
+        function() {
+            return Twitter.tweets;
+        },
+        function(tweets) {
+            $scope.tweets = tweets;
+
+            $scope.markers = tweets.map(function(tweet) {
+                return {
+                    lng: tweet.coordinates.coordinates[0],
+                    lat: tweet.coordinates.coordinates[1],
+                    message: tweet.text,
+                    focus: true
+                }
+            });
+
+        }
+    );
+
+
+
+</code></pre>
+
+<p><b>6.</b> Go to <a href="http://localhost:9000" target="_blank">http://localhost:9000</a> to see the TweetMap!</p>
+</div>
+
+<div>
+
+    <h2>Reactive Stocks</h2>
+
+    <p>The next phase of the workshop will build on the reactive application model by with a reactive stocks application.  All of the code for this half of the workshop is in the Stock Actors Directory:</p>
+
+    <a href="#code/app/stockActors" class="shortcut">Stock Actors</a>
+
+    <p>In a very similar fashion to the tweets application, reactive stocks pushes stock data dynamically to the client.</p>
+    <p>Click on a stock calls out to a sentiment analysis service which retrieves the tweets for the stock and does an analysis on the sentiment in the tweets.  Based on the sentiment it recommends to hold, buy or sell.  But please don't make any actual investment decisions based on this recommendation!</p>
+
+    <h2>Explore the App</h2>
+
+    <p>
+        You can access the Reactive Stocks application by going to: <a href="http://localhost:9000/stocks" target="_blank">http://localhost:9000/stocks</a><br/>
+        <br/>
+        The first thing you will see are three stock charts which are being pushed values in real-time from the server.  These values are simulated so the application always has interesting data flowing in real-time.  Clicking on a stock chart will fetch recent news mentioning the stock symbol, use a service to do sentiment analysis on each news, and then display a buy, sell, or hold recommendation based on the aggregate sentiments.  New stocks can be added to the list using the form in the header.
+    </p>
+
+</div>
+
+
+<div>
+
+    <h2>Writing Data to Cassandra</h2>
+
+
+    <a href="#code/app/stockActors/DataWriterActor.scala" class="shortcut">Data Writer Actor</a>
+
+
+    <p>Talk about how to write data to Cassandra.  The Java Driver Setup, the cluster connection, etc.
+    </p>
+
+</div>
+
+<div>
+
+    <h2>Reading Data from Cassandra</h2>
+
+    <a href="#code/app/stockActors/StockSummaryActor.scala" class="shortcut">Stock Summary Actor</a>
+
+    <p>Talk about how to read data to Cassandra.  Column Mapping, etc.  Read daily summary and write summary back into cassandra
+    </p>
+
+</div>
+
+
+</body>
+</html>

@@ -1,0 +1,12 @@
+# Routes
+# This file defines all application routes (Higher priority routes first)
+# ~~~~
+
+GET     /                           controllers.Tweets.index
+
+GET     /stocks                     controllers.StockController.index
+GET     /ws                         controllers.StockController.ws
+GET     /sentiment/:symbol          controllers.StockSentiment.get(symbol)
+
+# Use `Assets.versioned` to enable Play 2.3's Asset Fingerprinting
+GET        /assets/*file        controllers.Assets.versioned(path="/public", file: Asset)
