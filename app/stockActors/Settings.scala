@@ -18,11 +18,11 @@ class Settings(system: ExtendedActorSystem) extends Extension {
 
   val defaultTweetUrl = config.getString("tweet.url")
 
-  val stockManagerActor: ActorRef = Actor.noSender // system.actorOf(StockManagerActor.props())
+  val stockManagerActor: ActorRef =  system.actorOf(StockManagerActor.props())
 
-  val dataWriterActor: ActorRef = Actor.noSender  // system.actorOf(DataWriterActor.props())
+  val dataWriterActor: ActorRef = system.actorOf(DataWriterActor.props())
 
-  val stockSummaryActor: ActorRef = Actor.noSender  // system.actorOf(StockSummaryActor.props())
+  val stockSummaryActor: ActorRef = system.actorOf(StockSummaryActor.props())
 
 }
 

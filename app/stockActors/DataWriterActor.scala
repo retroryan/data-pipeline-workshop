@@ -7,52 +7,62 @@ import com.datastax.driver.core.{BoundStatement, PreparedStatement, Session, Clu
 import com.datastax.driver.core.policies.Policies
 import stockActors.DataWriterActor.WriteStock
 
-
+/**
+ * This Actor Class Writes Data to Cassandra.
+ * It hard codes the connection to a local cassandra instance.  A production setup would make several changes like:
+ *
+ * 1 - Setup a global connection to cassandra.  This would best be done in an Actor Extension like Settings
+ *
+ * 2 - Read the db config from a config file, like the play config file.
+ */
 class DataWriterActor extends Actor {
 
   val counter = new AtomicLong
 
-  def setupDbConnection():Session  = {
-    val cluster = Option(Cluster
+  def setupDbConnection(): Session = {
+    val cluster = Cluster
       .builder()
       .addContactPoints("127.0.0.1")
       .withRetryPolicy(Policies.defaultRetryPolicy())
-      .build())
+      .build()
 
-    cluster.get.connect("stocks")
+    //This creates a new session on this cluster, initialize it and sets it to the
+    //keyspace provided
+    cluster.connect("stocks")
   }
 
-
-  def available(addStockDatePreparedStatement:PreparedStatement, session:Session) : Receive = {
-    case WriteStock(stockData) => writeStockDb(stockData, addStockDatePreparedStatement, session)
-  }
-
+  /**
+   * This is the initial actor behavior which sets up the cassandra session and creates a prepared statement
+   * that is used to to write to cassandra.
+   * @return
+   */
   def receive = {
     val session = setupDbConnection()
     val addStockDatePreparedStatement = session.prepare(DataWriterActor.ADD_STOCK_DATE)
 
-    //stock price is turned off by default
-    //val addStockPricePreparedStatement = session.prepare(DataWriterActor.ADD_STOCK_PRICE)
-
+    //by returning available we are make the default receive behavior be available.
     available(addStockDatePreparedStatement, session)
   }
 
-  def writeStockDb(stockData: StockData, addStockDatePreparedStatement:PreparedStatement, session:Session) = {
-    writeStockDateDb(stockData, addStockDatePreparedStatement, session)
-
-    //this duplicates every entry to be sorted by price, akka materialized view
-    //turned off by default because it doubles the size of the database
-    //writeStockPriceDb(stockData)
-
-    //this can be used to verify the right number of records are being added to the db
-    counter.getAndIncrement
-    if (counter.get % 500 == 0)
-      println(s"Total: ${counter.get()}")
-
-    //println(s"Total: ${counter.get()} Added stock to history table: ${stockData.symbol} ${stockData.price} ${stockData.dateOffset}")
+  /**
+   * This defines is the actor receive block that will be used to handle write messages.
+   * It is defined in a message so that the actor processing can transition to this state once it is setup.
+   */
+  def available(addStockDatePreparedStatement: PreparedStatement, session: Session): Receive = {
+    case WriteStock(stockData) => writeStockDate(stockData, addStockDatePreparedStatement, session)
   }
 
-  def writeStockDateDb(stockData: StockData, addStockDatePreparedStatement:PreparedStatement, session:Session) = {
+  /**
+   * Bind the stock data to the prepared statement and execute the insert on the session.
+   *
+   * This actually stores the data in the database.
+   *
+   * @param stockData
+   * @param addStockDatePreparedStatement
+   * @param session
+   * @return
+   */
+  def writeStockDate(stockData: StockData, addStockDatePreparedStatement: PreparedStatement, session: Session) = {
     val bind: BoundStatement = addStockDatePreparedStatement.bind()
     bind.setUUID("tradeId", stockData.tradeId)
     bind.setString("symbol", stockData.symbol)
@@ -61,25 +71,16 @@ class DataWriterActor extends Actor {
     bind.setDecimal("price", stockData.price.underlying())
     bind.setInt("quantity", stockData.quantity)
     session.execute(bind)
-  }
 
-  def writeStockPriceDb(stockData: StockData, addStockPricePreparedStatement:PreparedStatement, session:Session) = {
-    val bind: BoundStatement = addStockPricePreparedStatement.bind()
-    bind.setUUID("tradeId", stockData.tradeId)
-    bind.setString("symbol", stockData.symbol)
-    bind.setInt("dateOffset", stockData.dateOffset)
-    bind.setDate("tradeDate", stockData.tradeDate.toDate)
-    bind.setInt("priceAvg", stockData.price.rounded.intValue())
-    bind.setDecimal("price", stockData.price.underlying())
-    bind.setInt("quantity", stockData.quantity)
-    session.execute(bind)
+    //this can be used to verify the right number of records are being added to the db
+    counter.getAndIncrement
+    if (counter.get % 500 == 0)
+      println(s"Total: ${counter.get()}")
+
   }
 }
 
-
 object DataWriterActor {
-
-  val ADD_STOCK_PRICE = "INSERT INTO stock_ticks_price (tradeId, symbol, dateOffset, tradeDate, priceAvg, price, quantity) VALUES (?, ?,?,?,?,?,?)"
 
   val ADD_STOCK_DATE = "INSERT INTO stock_ticks_date (tradeId, symbol, dateOffset, tradeDate, price, quantity) VALUES (?,?,?,?,?,?)"
 
@@ -87,4 +88,5 @@ object DataWriterActor {
     Props(new DataWriterActor())
 
   case class WriteStock(stockData: StockData)
+
 }

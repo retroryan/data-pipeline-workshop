@@ -46,35 +46,28 @@ class StockActor(symbol: String) extends Actor with ActorLogging with SettingsAc
   val stockTick = context.system.scheduler.schedule(Duration.Zero, 500.millis, self, FetchLatest)
 
   def receive = {
-    case FetchLatest =>
+    case FetchLatest => {
       // add a new stock price to the history and drop the oldest
       val newPrice = FakeStockQuote.newPrice(stockHistory.last.doubleValue())
       stockHistory = stockHistory.drop(1) :+ newPrice
       // notify watchers
       watchers.foreach(_ ! StockUpdate(symbol, newPrice))
+    }
 
-      currentDateTime.addMinutes(rand.nextInt(30))
-      val currentDayOffset = (Days.daysBetween(epoch, currentDateTime)).getDays
-      dataWriterActor ! WriteStock(StockData(symbol, currentDayOffset, currentDateTime.toDateTime, newPrice, rand.nextInt(1000)))
-
-      if (currentDayOffset != lastDayOffset) {
-        println(s"crnt: $currentDayOffset and last: $lastDayOffset")
-        stockSummaryActor ! ReadStock(symbol, lastDayOffset)
-        lastDayOffset = currentDayOffset
-      }
-
-    case WatchStock(_) =>
+    case WatchStock(_) => {
       // send the stock history to the user
       sender ! StockHistory(symbol, stockHistory.toList)
       // add the watcher to the list
       watchers = watchers + sender
+    }
 
-    case UnwatchStock(_) =>
+    case UnwatchStock(_) => {
       watchers = watchers - sender
       if (watchers.size == 0) {
         stockTick.cancel()
         context.stop(self)
       }
+    }
   }
 }
 

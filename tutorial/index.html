@@ -348,23 +348,38 @@ def fetchTweets(query: String): Future[JsValue] = {
 
 <div>
 
-    <h2>Reactive Stocks</h2>
+    <h2>Reactive Stocks - Using Akka and Cassandra Together</h2>
 
     <p>The next phase of the workshop will build on the reactive application model by with a reactive stocks application.  All of the code for this half of the workshop is in the Stock Actors Directory:</p>
 
     <a href="#code/app/stockActors" class="shortcut">Stock Actors</a>
 
     <p>In a very similar fashion to the tweets application, reactive stocks pushes stock data dynamically to the client.</p>
-    <p>Click on a stock calls out to a sentiment analysis service which retrieves the tweets for the stock and does an analysis on the sentiment in the tweets.  Based on the sentiment it recommends to hold, buy or sell.  But please don't make any actual investment decisions based on this recommendation!</p>
 
     <h2>Explore the App</h2>
 
     <p>
         You can access the Reactive Stocks application by going to: <a href="http://localhost:9000/stocks" target="_blank">http://localhost:9000/stocks</a><br/>
         <br/>
-        The first thing you will see are three stock charts which are being pushed values in real-time from the server.  These values are simulated so the application always has interesting data flowing in real-time.  Clicking on a stock chart will fetch recent news mentioning the stock symbol, use a service to do sentiment analysis on each news, and then display a buy, sell, or hold recommendation based on the aggregate sentiments.  New stocks can be added to the list using the form in the header.
+        The first thing you will see are three stock charts which are being pushed values in real-time from the server.  These values are simulated so the application always has interesting data flowing in real-time.  Clicking on a stock chart will fetch recent tweets mentioning the stock symbol, use a service to do sentiment analysis on each tweet, and then display a buy, sell, or hold recommendation based on the aggregate sentiments.  New stocks can be added to the list using the form in the header.
+
+    <p>No guarantee of accuracy!  Please don't make any actual investment decisions based on this recommendation!</p>
+
     </p>
 
+</div>
+
+<div>
+    <h2>Reactive Stocks Project Requirements</h2>
+    <p>The goal of the project is to create an analysis system for the financial services industry.  The system will provide analysts with historical time-series tick data for a specific financial instrument. Tick data represents the time, price and quantity traded (shares for stocks or contracts for commodities) for a single trade. From this data, the system can create price and trade data in various durations of time (typically referred to as “price bars”, e.g. 1 hour bars, 1 day bars, etc.).  The parameters of interest typically include the open, high, low, and close prices for each price bar.  Also included is the total volume traded during each bar is also of interest.  A time-series of price bars can then be used to create a graphical “bar chart”. </p>
+
+    <br/>
+    <p>The system should be designed to retrieve all the tick data for a particular stock in a particular time range.  For example the following would be common queries:</p>
+
+    <ul>
+        <li>All tick data within a given 1-minute  interval for a specified date.</li>
+        <li>All tick data within a given 10-minute  interval  for a specified date.</li>
+        </ul>
 </div>
 
 
@@ -372,23 +387,80 @@ def fetchTweets(query: String): Future[JsValue] = {
 
     <h2>Writing Data to Cassandra</h2>
 
-
-    <a href="#code/app/stockActors/DataWriterActor.scala" class="shortcut">Data Writer Actor</a>
-
-
-    <p>Talk about how to write data to Cassandra.  The Java Driver Setup, the cluster connection, etc.
+    <p>This will show how to write data to Cassandra and will cover the Java Driver Setup, the cluster connection, etc.
     </p>
+
+    <p><b>1.</b> Look at  <a href="#code/app/stockActors/DataWriterActor.scala" class="shortcut">app/stockActors/DataWriterActor.scala</a> to see how an actor can write data to cassandra.</p>
+
+    <p><b>2.</b> Call the Data Writer Actor when a new stock happens.  In  <a href="#code/app/stockActors/StockActor.scala" class="shortcut">StockActor.scala</a> inside the FetchLatest block send a message to the DataWriterActor to store the current stock data.</p>
+
+    <pre><code>
+
+//Increase the time of day by a random amount of minutes
+currentDateTime.addMinutes(rand.nextInt(30))
+//Calculate the current day offset from epoch that will be used for this days bucket.
+val currentDayOffset = (Days.daysBetween(epoch, currentDateTime)).getDays
+//Send the stock data to the DataWriter Actor
+dataWriterActor ! WriteStock(StockData(symbol, currentDayOffset, currentDateTime.toDateTime, newPrice, rand.nextInt(1000)))
+
+    </code></pre>
 
 </div>
 
 <div>
 
-    <h2>Reading Data from Cassandra</h2>
+    <h2>Reading Data from Cassandra and Storing a Summary - Part 1</h2>
 
-    <a href="#code/app/stockActors/StockSummaryActor.scala" class="shortcut">Stock Summary Actor</a>
-
-    <p>Talk about how to read data to Cassandra.  Column Mapping, etc.  Read daily summary and write summary back into cassandra
+    <p>This section will show how to read data from Cassandra. It will read daily summary and write summary back into cassandra
     </p>
+
+    <p> Look at <a href="#code/app/stockActors/StockSummaryActor.scala" class="shortcut">Stock Summary Actor</a> When it receives a message to summarize the data it calls fetchStocksBySymbolDate</p>
+
+    <p>After the Stock Data for a day has been read out of the database it needs to be summarized and stored in a summary table.  </p>
+    <p>Add the following to the method fetchStocksBySymbolDate to summarize the data and store it in cassandra:</p>
+
+    <pre><code>
+
+if (stockDataSet.size > 1) {
+    val open = stockDataSet.head
+    val close = stockDataSet.last
+    val high = stockDataSet.maxBy(sd => sd.price)
+    val low = stockDataSet.minBy(sd => sd.price)
+    val totQuantity = stockDataSet.foldLeft(0) {
+        (sum, sd) => sum + sd.quantity
+    }
+
+    val insertSummaryBind: BoundStatement = insertStockSummary.bind()
+    insertSummaryBind.setString("symbol", symbol)
+    insertSummaryBind.setInt("dateOffset", dateOffset)
+    insertSummaryBind.setDecimal("open", open.price.underlying())
+    insertSummaryBind.setDecimal("close", close.price.underlying())
+    insertSummaryBind.setDecimal("high", high.price.underlying())
+    insertSummaryBind.setDecimal("low", low.price.underlying())
+    insertSummaryBind.setInt("totQuantity", totQuantity)
+    session.execute(insertSummaryBind)
+}
+
+    </code></pre>
+</div>
+
+<div>
+
+    <h2>Reading Data from Cassandra and Storing a Summary - Part 2</h2>
+
+    <p> In  <a href="#code/app/stockActors/StockActor.scala" class="shortcut">StockActor.scala</a> inside the FetchLatest block send a message to the StockSummaryActor to calculate and store the stock summary data.</p>
+
+    <pre><code>
+
+//When we fetch the latest stock see if the day offset of currentDateTime has changed.
+//If it is the next day then calculate the stock summary of the previous day.
+if (currentDayOffset != lastDayOffset) {
+    println(s"crnt: $currentDayOffset and last: $lastDayOffset")
+    stockSummaryActor ! ReadStock(symbol, lastDayOffset)
+    lastDayOffset = currentDayOffset
+}
+
+    </code></pre>
 
 </div>
 

@@ -10,7 +10,10 @@ import stockActors.StockSummaryActor.ReadStock
 
 import scala.concurrent.Future
 
-
+/**
+ * This is the actor that pulls the days data out of cassandra and summarizes it.
+ * It then takes this summary data and stores it in a separate summary table.
+ */
 class StockSummaryActor extends Actor {
 
   val counter = new AtomicLong
@@ -33,14 +36,6 @@ class StockSummaryActor extends Actor {
 
   implicit val executionContext = context.system.dispatcher
 
-  def available(selectStockTicks:PreparedStatement, insertStockSummary:PreparedStatement, session:Session) : Receive = {
-    case ReadStock(symbol, dateOffset) => {
-      Future {
-        fetchStocksBySymbolDate(symbol, dateOffset, selectStockTicks, insertStockSummary, session)
-      }
-    }
-  }
-
   def receive = {
     val session = setupDbConnection()
     val selectStockTicks = session.prepare(StockSummaryActor.SELECT_STOCK_DATE)
@@ -49,7 +44,12 @@ class StockSummaryActor extends Actor {
     available(selectStockTicks, insertStockSummary, session)
   }
 
-  def fetchStocksBySymbolDate(symbol: String, dateOffset: Int, selectStockTicks:PreparedStatement, insertStockSummary:PreparedStatement, session:Session) = {
+  def available(selectStockTicks: PreparedStatement, insertStockSummary: PreparedStatement, session: Session): Receive = {
+    case ReadStock(symbol, dateOffset) =>
+      fetchStocksBySymbolDate(symbol, dateOffset, selectStockTicks, insertStockSummary, session)
+  }
+
+  def fetchStocksBySymbolDate(symbol: String, dateOffset: Int, selectStockTicks: PreparedStatement, insertStockSummary: PreparedStatement, session: Session) = {
     println(s"summarizing stock $symbol for epoch offset $dateOffset")
     val boundSelectStock: BoundStatement = selectStockTicks.bind()
     boundSelectStock.setString(0, symbol)
@@ -69,26 +69,6 @@ class StockSummaryActor extends Actor {
 
       val sd = StockData(tradeId, symbol, dateOffset, new DateTime(tradeDate), price, quantity)
       stockDataSet = stockDataSet :+ sd
-    }
-
-    if (stockDataSet.size > 1) {
-      val open = stockDataSet.head
-      val close = stockDataSet.last
-      val high = stockDataSet.maxBy(sd => sd.price)
-      val low = stockDataSet.minBy(sd => sd.price)
-      val totQuantity = stockDataSet.foldLeft(0) {
-        (sum, sd) => sum + sd.quantity
-      }
-
-      val insertSummaryBind: BoundStatement = insertStockSummary.bind()
-      insertSummaryBind.setString("symbol", symbol)
-      insertSummaryBind.setInt("dateOffset", dateOffset)
-      insertSummaryBind.setDecimal("open", open.price.underlying())
-      insertSummaryBind.setDecimal("close", close.price.underlying())
-      insertSummaryBind.setDecimal("high", high.price.underlying())
-      insertSummaryBind.setDecimal("low", low.price.underlying())
-      insertSummaryBind.setInt("totQuantity", totQuantity)
-      session.execute(insertSummaryBind)
     }
   }
 }
